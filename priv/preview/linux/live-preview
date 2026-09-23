@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+"""Live-preview engine shared by xopen and mdopen."""
+
+import argparse
+import hashlib
+import html
+import http.server
+import json
+import mimetypes
+import os
+from pathlib import Path
+import queue
+import re
+import signal
+import secrets
+import socket
+import subprocess
+import sys
+import threading
+import time
+from urllib.parse import quote, unquote, urlsplit
+
+
+DEFAULT_PATH_BOUNDARY_REGEX = r"tmp"
+VERSION = "0.11.0"
+
+
+def read_port_ledger(path):
+    """Return a previously assigned preview port, ignoring stale/corrupt state."""
+    if not path:
+        return None
+    try:
+        port = int(Path(path).read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+    return port if 0 < port <= 65535 else None
+
+
+def write_port_ledger(path, port):
+    """Atomically retain an automatically assigned port for a future watcher."""
+    path = Path(path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(descriptor, f"{port}\n".encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def file_signature(path):
+    """Return enough metadata to notice an atomic save on any supported host."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size, stat.st_ino
+
+
+def detach():
+    """Detach the preview server without relying on platform-specific nohup."""
+    if os.fork():
+        return False
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    return True
+
+
+def short_source_path(source, boundary_regex=DEFAULT_PATH_BOUNDARY_REGEX):
+    """Return a compact source label, preserving context before temp trees."""
+    source = Path(source).resolve()
+    directories = source.parts[:-1]
+    try:
+        boundary = re.compile(boundary_regex)
+    except re.error as error:
+        raise ValueError(f"invalid path boundary regex: {error}") from error
+
+    for index in range(len(directories) - 1, 1, -1):
+        if boundary.fullmatch(directories[index]):
+            meaningful_descendants = directories[index + 2:]
+            return str(
+                Path(directories[index - 1])
+                / "..."
+                / Path(*meaningful_descendants)
+                / source.name
+            )
+    return str(Path(source.parent.name) / source.name)
+
+
+class Preview:
+    def __init__(self, args):
+        self.source = Path(args.source)
+        self.output = Path(args.output) if args.output else self.source
+        configured_root = getattr(args, "serve_root", None)
+        self.serve_root = (
+            Path(configured_root).resolve()
+            if configured_root
+            else self.output.parent.resolve()
+        )
+        self.css = Path(args.css) if args.css else None
+        self.source_label = Path(args.source_label) if args.source_label else None
+        self.fallback_title = args.fallback_title
+        self.path_boundary_regex = args.path_boundary_regex
+        self.mode = args.mode
+        self.ready = Path(args.ready)
+        self.pidfile = Path(args.pidfile)
+        self.idle_timeout = args.idle_timeout
+        self.startup_timeout = args.startup_timeout
+        self.clients = {}
+        self.clients_lock = threading.Lock()
+        self.had_client = False
+        self.empty_since = None
+        self.shutdown_requested = threading.Event()
+        self.shutdown_token = secrets.token_urlsafe(24)
+        self.render_lock = threading.RLock()
+        self.rendered_signature = None
+        self.sync_error = None
+
+    def refresh(self):
+        """Check source independently of watcher notifications; retry failed renders."""
+        with self.render_lock:
+            signature = file_signature(self.source)
+            if signature is None:
+                self.sync_error = "Source unavailable"
+                return False
+            if signature == self.rendered_signature:
+                self.sync_error = None
+                return False
+            try:
+                rendered = self.render()
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"live-preview: render failed: {error}", file=sys.stderr)
+                rendered = False
+            if not rendered:
+                self.sync_error = "Render failed — retrying"
+                return False
+            # A save racing Pandoc must be checked again, never certified current.
+            if file_signature(self.source) != signature:
+                self.sync_error = "Source changing — retrying"
+                return False
+            self.rendered_signature = signature
+            self.sync_error = None
+            return True
+
+    def render_linked_markdown(self, source):
+        """Render a repository Markdown link without creating another server."""
+        result = subprocess.run(
+            ["pandoc", str(source), "--from=gfm", "--to=html5", "--standalone",
+             f"--metadata=pagetitle={self.document_title_for(source)}"],
+            text=True, capture_output=True, check=True,
+        )
+        return result.stdout
+
+    def document_title_for(self, source):
+        try:
+            for line in Path(source).read_text(encoding="utf-8").splitlines():
+                if line.startswith("# ") and line[2:].strip():
+                    return line[2:].strip()
+        except OSError:
+            pass
+        return self.fallback_title
+
+    def synchronization(self, linked_source=None):
+        # Heartbeats verify the content, not merely the HTTP connection. This also
+        # repairs a missed polling iteration or a stalled watcher thread.
+        if linked_source is not None:
+            try:
+                rendered = self.render_linked_markdown(linked_source)
+                return {"revision": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+                        "error": None, "checked_at": round(time.time() * 1000),
+                        "version": VERSION}
+            except (OSError, subprocess.SubprocessError):
+                return {"revision": None, "error": "Source unavailable",
+                        "checked_at": round(time.time() * 1000), "version": VERSION}
+        with self.render_lock:
+            self.refresh()
+            try:
+                revision = hashlib.sha256(self.output.read_bytes()).hexdigest()
+            except OSError:
+                revision = None
+                self.sync_error = "Preview unavailable"
+            return {"revision": revision, "error": self.sync_error,
+                    "checked_at": round(time.time() * 1000), "version": VERSION}
+
+    def render(self):
+        if self.mode == "html":
+            return self.source.is_file()
+        title = self.document_title()
+        result = subprocess.run(
+            [
+                "pandoc", str(self.source), "--from=gfm", "--to=html5", "--standalone",
+                f"--metadata=pagetitle={title}", f"--css={self.css.name}",
+                f"--include-before-body={self.source_label}",
+                f"--output={self.output}",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode:
+            sys.stderr.write(result.stderr)
+            return False
+        return True
+
+    def document_title(self):
+        return self.document_title_for(self.source)
+
+    def html(self, linked_source=None):
+        source = Path(linked_source) if linked_source is not None else self.source
+        with self.render_lock:
+            data = (self.render_linked_markdown(source) if linked_source is not None
+                    else self.output.read_bytes().decode("utf-8"))
+        return self.decorate(data, linked_source)
+
+    def decorate(self, data, linked_source=None, revision=None):
+        """Share freshness, position restoration and close controls with viewers."""
+        source = Path(linked_source) if linked_source is not None else self.source
+        revision = revision or hashlib.sha256(data.encode("utf-8")).hexdigest()
+        if not re.search(r"<base\b", data, flags=re.IGNORECASE):
+            relative_parent = source.resolve().parent.relative_to(self.serve_root)
+            relative_url = quote(relative_parent.as_posix(), safe="/")
+            base_href = "/" if relative_url == "." else f"/{relative_url}/"
+            base_element = f'<base href="{base_href}">'
+            head = re.search(r"<head(?:\s[^>]*)?>", data, flags=re.IGNORECASE)
+            if head:
+                data = data[:head.end()] + "\n" + base_element + data[head.end():]
+            else:
+                data = base_element + "\n" + data
+        modified_at_ms = round(source.stat().st_mtime * 1000)
+        source_path = html.escape(str(source.resolve()))
+        source_short_path = html.escape(
+            short_source_path(source, self.path_boundary_regex)
+        )
+        event_source = "" if linked_source is None else "&source=" + quote(
+            str(source.resolve().relative_to(self.serve_root)), safe=""
+        )
+        reload_script = f"""<style>
+  #live-preview-status {{
+    position: fixed;
+    top: .65rem;
+    right: .65rem;
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 999px;
+    background: Canvas;
+    background: color-mix(in srgb, Canvas 90%, transparent);
+    color: CanvasText;
+    box-shadow: 0 1px 4px rgb(0 0 0 / 18%);
+    font: 500 12px/1.2 system-ui, sans-serif;
+    max-width: calc(100vw - 1.3rem);
+  }}
+  #live-preview-source {{
+    overflow: hidden;
+    padding: .3rem .55rem;
+    border-right: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    font: 500 11px/1.2 ui-monospace, monospace;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }}
+  #live-preview-source-toggle {{
+    flex: none;
+    appearance: none;
+    border: 0;
+    border-right: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    padding: .3rem .45rem;
+    background: transparent;
+    color: inherit;
+    font: 600 11px/1.2 system-ui, sans-serif;
+    cursor: pointer;
+  }}
+  #live-preview-source-toggle:hover {{ background: color-mix(in srgb, currentColor 10%, transparent); }}
+  #live-preview-source-toggle:focus-visible {{ outline: 2px solid Highlight; outline-offset: 2px; }}
+  #live-preview-freshness {{
+    flex: none;
+    padding: .3rem .45rem .3rem .55rem;
+  }}
+  #live-preview-sync {{ padding: .3rem .45rem; }}
+  #live-preview-sync.live-preview-healthy {{
+    width: .48rem;
+    height: .48rem;
+    margin: 0 .45rem;
+    padding: 0;
+    border-radius: 50%;
+    background: #22c55e;
+    box-shadow: 0 0 0 0 rgb(34 197 94 / 45%);
+    animation: live-preview-pulse 2.4s ease-out infinite;
+  }}
+  @keyframes live-preview-pulse {{
+    0%, 55% {{ box-shadow: 0 0 0 0 rgb(34 197 94 / 42%); }}
+    85%, 100% {{ box-shadow: 0 0 0 .32rem rgb(34 197 94 / 0%); }}
+  }}
+  @media (prefers-reduced-motion: reduce) {{
+    #live-preview-sync.live-preview-healthy {{ animation: none; }}
+  }}
+  #live-preview-close {{
+    appearance: none;
+    border: 0;
+    border-left: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    border-radius: 0 999px 999px 0;
+    padding: .2rem .5rem .25rem .4rem;
+    background: transparent;
+    color: inherit;
+    font: 700 15px/1 system-ui, sans-serif;
+    cursor: pointer;
+  }}
+  #live-preview-close:hover {{ background: color-mix(in srgb, currentColor 10%, transparent); }}
+  #live-preview-close:focus-visible {{ outline: 2px solid Highlight; outline-offset: 2px; }}
+  #live-preview-close:disabled {{ cursor: wait; opacity: .55; }}
+  .live-preview-modal-open #live-preview-status {{ display: none; }}
+  @media print {{
+    #live-preview-status {{ display: none; }}
+  }}
+  html.live-preview-disconnected body > *:not(#live-preview-status) {{
+    filter: grayscale(1);
+    opacity: .52;
+    transition: filter 160ms ease, opacity 160ms ease;
+  }}
+</style>
+<div id="live-preview-status">
+  <button id="live-preview-source-toggle" type="button" aria-expanded="false" aria-controls="live-preview-source" aria-live="polite" title="Show full source path">Path</button>
+  <code id="live-preview-source" title="{source_path}" data-short-path="{source_short_path}" data-path="{source_path}">{source_short_path}</code>
+  <time id="live-preview-freshness"></time>
+  <span id="live-preview-sync" role="status">Checking…</span>
+  <button id="live-preview-close" type="button" aria-label="Close preview and stop live preview server" title="Close preview and stop server">×</button>
+</div>
+<script>
+  const freshness = document.getElementById('live-preview-freshness');
+  const syncStatus = document.getElementById('live-preview-sync');
+  const renderedRevision = {json.dumps(revision)};
+  const scrollKey = 'live-preview-scroll:' + location.href;
+  function reloadPreview() {{
+    try {{ sessionStorage.setItem(scrollKey, JSON.stringify([scrollX, scrollY])); }} catch (_) {{}}
+    location.reload();
+  }}
+  addEventListener('load', () => {{
+    try {{
+      const position = JSON.parse(sessionStorage.getItem(scrollKey));
+      sessionStorage.removeItem(scrollKey);
+      if (Array.isArray(position)) requestAnimationFrame(() => scrollTo(...position));
+    }} catch (_) {{}}
+  }}, {{once: true}});
+  const closePreview = document.getElementById('live-preview-close');
+  const sourcePath = document.getElementById('live-preview-source');
+  const sourceToggle = document.getElementById('live-preview-source-toggle');
+  const modalSelector = 'dialog[open], [role="dialog"][aria-modal="true"]';
+  function syncPreviewChrome() {{
+    const modalOpen = [...document.querySelectorAll(modalSelector)].some(element => {{
+      const style = getComputedStyle(element);
+      return !element.hidden && style.display !== 'none' &&
+        style.visibility !== 'hidden' && element.getClientRects().length > 0;
+    }});
+    document.documentElement.classList.toggle('live-preview-modal-open', modalOpen);
+  }}
+  new MutationObserver(syncPreviewChrome).observe(document.documentElement, {{
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['open', 'hidden', 'class', 'style', 'aria-hidden']
+  }});
+  syncPreviewChrome();
+  var lastHeartbeatAt = Date.now();
+  const modifiedAt = new Date({modified_at_ms});
+  const locale = document.documentElement.lang || navigator.language;
+  freshness.dateTime = modifiedAt.toISOString();
+  freshness.title = modifiedAt.toLocaleString(locale);
+  const relativeTime = new Intl.RelativeTimeFormat(locale, {{ numeric: 'auto', style: 'long' }});
+  function updateFreshness() {{
+    const seconds = Math.min(0, Math.round((modifiedAt - Date.now()) / 1000));
+    let value = seconds;
+    let unit = 'second';
+    if (Math.abs(seconds) >= 86400) {{ value = Math.round(seconds / 86400); unit = 'day'; }}
+    else if (Math.abs(seconds) >= 3600) {{ value = Math.round(seconds / 3600); unit = 'hour'; }}
+    else if (Math.abs(seconds) >= 60) {{ value = Math.round(seconds / 60); unit = 'minute'; }}
+    freshness.textContent = 'Edited ' + relativeTime.format(value, unit);
+  }}
+  updateFreshness();
+  setInterval(updateFreshness, 1000);
+  async function copyText(value) {{
+    if (window.isSecureContext && navigator.clipboard?.writeText) {{
+      await navigator.clipboard.writeText(value);
+      return;
+    }}
+    const field = document.createElement('textarea');
+    field.value = value;
+    field.setAttribute('readonly', '');
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    field.setSelectionRange(0, field.value.length);
+    const copied = document.execCommand('copy');
+    field.remove();
+    if (!copied) throw new Error('copy unavailable');
+  }}
+  sourceToggle.addEventListener('click', async () => {{
+    const expanded = sourceToggle.getAttribute('aria-expanded') === 'true';
+    if (!expanded) {{
+      sourceToggle.setAttribute('aria-expanded', 'true');
+      sourceToggle.textContent = 'Copy';
+      sourceToggle.title = 'Copy full source path';
+      sourcePath.textContent = sourcePath.dataset.path;
+      return;
+    }}
+    try {{
+      await copyText(sourcePath.dataset.path);
+      sourceToggle.textContent = 'Copied';
+      sourceToggle.disabled = true;
+      setTimeout(() => {{
+        sourceToggle.setAttribute('aria-expanded', 'false');
+        sourceToggle.textContent = 'Path';
+        sourceToggle.title = 'Show full source path';
+        sourceToggle.disabled = false;
+        sourcePath.textContent = sourcePath.dataset.shortPath;
+      }}, 900);
+    }} catch (error) {{
+      sourceToggle.textContent = 'Copy';
+      sourceToggle.title = 'Could not copy; try again';
+    }}
+  }});
+  // randomUUID is restricted to secure contexts by Safari and Chromium. This
+  // identifier only correlates one ephemeral SSE connection, so a local
+  // timestamp/random fallback is sufficient on an HTTP LAN preview.
+  const clientId = crypto.randomUUID?.()
+    ?? `${{Date.now()}}-${{Math.random().toString(16).slice(2)}}`;
+  let events;
+  let previewStopped = false;
+  function markDisconnected() {{
+    syncStatus.classList.remove('live-preview-healthy');
+    syncStatus.removeAttribute('aria-label');
+    syncStatus.textContent = 'Disconnected — retrying';
+    document.documentElement.classList.add('live-preview-disconnected');
+  }}
+  function connectEvents() {{
+  events?.close();
+  events = new EventSource('/events?client=' + encodeURIComponent(clientId) + {json.dumps(event_source)});
+  events.onerror = markDisconnected;
+  events.onopen = () => {{
+    lastHeartbeatAt = Date.now();
+    syncStatus.classList.remove('live-preview-healthy');
+    syncStatus.removeAttribute('aria-label');
+    syncStatus.textContent = 'Checking…';
+  }};
+  events.addEventListener('heartbeat', event => {{
+    try {{
+      const state = JSON.parse(event.data);
+      if (!state.checked_at || !state.version) throw new Error('unverified heartbeat');
+      lastHeartbeatAt = Date.now();
+      syncStatus.title = 'Last content check: ' + new Date(state.checked_at).toLocaleString(locale);
+      if (state.error) {{
+        syncStatus.classList.remove('live-preview-healthy');
+        syncStatus.removeAttribute('aria-label');
+        syncStatus.textContent = state.error;
+        document.documentElement.classList.add('live-preview-disconnected');
+      }} else if (state.revision !== renderedRevision || state.version !== {json.dumps(VERSION)}) {{
+        syncStatus.classList.remove('live-preview-healthy');
+        syncStatus.removeAttribute('aria-label');
+        syncStatus.textContent = 'Update found — refreshing';
+        reloadPreview();
+      }} else {{
+        syncStatus.textContent = '';
+        syncStatus.classList.add('live-preview-healthy');
+        syncStatus.setAttribute('aria-label', 'Live preview up to date');
+        document.documentElement.classList.remove('live-preview-disconnected');
+      }}
+    }} catch (error) {{ markDisconnected(); }}
+  }});
+  events.onmessage = event => {{ if (event.data === 'reload') reloadPreview(); }};
+  }}
+  connectEvents();
+  setInterval(() => {{
+    if (previewStopped) return;
+    if (Date.now() - lastHeartbeatAt > 6500 || events.readyState === EventSource.CLOSED) {{
+      markDisconnected();
+      // A proxy 502/non-SSE response permanently closes EventSource; native
+      // retry no longer runs. Replace it, including a silently stalled stream.
+      connectEvents();
+    }}
+  }}, 2000);
+  addEventListener('pagehide', () => {{
+    previewStopped = true;
+    events.close();
+    navigator.sendBeacon('/disconnect/{self.shutdown_token}?client=' + encodeURIComponent(clientId));
+  }});
+  addEventListener('pageshow', event => {{
+    if (event.persisted) {{ previewStopped = false; connectEvents(); }}
+  }});
+  closePreview.addEventListener('click', async () => {{
+    previewStopped = true;
+    closePreview.disabled = true;
+    events.close();
+    try {{
+      await fetch('/shutdown/{self.shutdown_token}', {{ method: 'POST', keepalive: true }});
+    }} finally {{
+      window.close();
+      document.documentElement.innerHTML = '<head><title>Preview closed</title></head><body><p>Preview closed. You can close this tab.</p></body>';
+    }}
+  }});
+</script>"""
+        marker = "</body>"
+        if marker in data.lower():
+            position = data.lower().rfind(marker)
+            return data[:position] + reload_script + "\n" + data[position:]
+        return data + "\n" + reload_script + "\n"
+
+    def add_client(self, client_id, client):
+        with self.clients_lock:
+            self.clients[client_id] = client
+            self.had_client = True
+            self.empty_since = None
+
+    def remove_client(self, client_id, client=None):
+        with self.clients_lock:
+            if client is None or self.clients.get(client_id) is client:
+                self.clients.pop(client_id, None)
+            if self.had_client and not self.clients:
+                self.empty_since = time.monotonic()
+
+    def reload_clients(self):
+        with self.clients_lock:
+            clients = list(self.clients.values())
+        for client in clients:
+            client.put("data: reload\n\n")
+
+    def should_stop(self, started):
+        with self.clients_lock:
+            if self.empty_since is not None:
+                return time.monotonic() - self.empty_since >= self.idle_timeout
+            return not self.had_client and time.monotonic() - started >= self.startup_timeout
+
+
+def make_handler(preview):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            parsed = urlsplit(self.path)
+            if parsed.path == "/events":
+                query = dict(
+                    part.split("=", 1) if "=" in part else (part, "")
+                    for part in parsed.query.split("&") if part
+                )
+                client_id = unquote(query.get("client", ""))
+                linked_source = self.safe_target(unquote(query.get("source", "")))
+                if query.get("source") and (linked_source is None or linked_source.suffix.lower() not in (".md", ".markdown")):
+                    self.send_error(404)
+                    return
+                if not client_id:
+                    self.send_error(400, "missing client id")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                messages = queue.Queue()
+                preview.add_client(client_id, messages)
+                try:
+                    self.wfile.write(b": connected\n\n")
+                    self.wfile.flush()
+                    while not preview.shutdown_requested.is_set():
+                        try:
+                            message = messages.get(timeout=2)
+                        except queue.Empty:
+                            message = "event: heartbeat\ndata: " + json.dumps(preview.synchronization(linked_source)) + "\n\n"
+                        self.wfile.write(message.encode())
+                        self.wfile.flush()
+                except OSError:
+                    pass
+                finally:
+                    preview.remove_client(client_id, messages)
+                return
+
+            path = unquote(urlsplit(self.path).path)
+            requested = "index.html" if path in ("/", "/index.html") else path.lstrip("/")
+            if requested == "index.html":
+                try:
+                    data = preview.html().encode()
+                except (OSError, UnicodeError):
+                    self.send_error(503, "Preview unavailable; retry shortly")
+                    return
+                content_type = "text/html; charset=utf-8"
+            else:
+                target = self.safe_target(requested)
+                if target is None:
+                    self.send_error(404)
+                    return
+                if target.suffix.lower() in (".md", ".markdown"):
+                    try:
+                        data = preview.html(target).encode()
+                    except (OSError, UnicodeError, subprocess.SubprocessError):
+                        self.send_error(503, "Preview unavailable; retry shortly")
+                        return
+                    content_type = "text/html; charset=utf-8"
+                else:
+                    data = target.read_bytes()
+                    content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            if not data:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def safe_target(self, requested):
+            if not requested:
+                return None
+            root = preview.serve_root
+            target = (root / requested).resolve()
+            hidden = any(part.startswith(".") for part in Path(requested).parts)
+            if hidden or root not in target.parents or not target.is_file():
+                return None
+            return target
+
+        def do_POST(self):
+            parsed = urlsplit(self.path)
+            if parsed.path == f"/disconnect/{preview.shutdown_token}":
+                query = dict(
+                    part.split("=", 1) if "=" in part else (part, "")
+                    for part in parsed.query.split("&") if part
+                )
+                client_id = unquote(query.get("client", ""))
+                if client_id:
+                    preview.remove_client(client_id)
+                self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            if self.path != f"/shutdown/{preview.shutdown_token}":
+                self.send_error(404)
+                return
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            preview.shutdown_requested.set()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    return Handler
+
+
+def watch(preview):
+    # One stat every 250 ms is cheap and does not consume the user's scarce
+    # inotify instances. Heartbeats separately verify revisions every 2 seconds.
+    while not preview.shutdown_requested.wait(0.25):
+        if preview.refresh():
+            preview.reload_clients()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--mode", choices=("html", "markdown"), default="markdown")
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--serve-root")
+    parser.add_argument("--output")
+    parser.add_argument("--css")
+    parser.add_argument("--source-label")
+    parser.add_argument("--fallback-title", default="Preview")
+    parser.add_argument(
+        "--path-boundary-regex",
+        default=os.environ.get(
+            "LIVE_PREVIEW_PATH_BOUNDARY_REGEX", DEFAULT_PATH_BOUNDARY_REGEX
+        ),
+        help="directory-component regex at which to collapse the displayed path",
+    )
+    parser.add_argument("--ready", required=True)
+    parser.add_argument("--pidfile", required=True)
+    parser.add_argument("--idle-timeout", type=float, default=12)
+    parser.add_argument("--startup-timeout", type=float, default=60)
+    parser.add_argument("--bind", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port-ledger")
+    parser.add_argument("--detach", action="store_true")
+    args = parser.parse_args()
+    try:
+        re.compile(args.path_boundary_regex)
+    except re.error as error:
+        parser.error(f"invalid --path-boundary-regex: {error}")
+    if args.detach and not detach():
+        return 0
+    preview = Preview(args)
+    if not preview.refresh():
+        return 1
+
+    if not 0 <= args.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
+
+    ledger_port = read_port_ledger(args.port_ledger) if args.port == 0 else None
+    selected_port = ledger_port or args.port
+    try:
+        server = http.server.ThreadingHTTPServer(
+            (args.bind, selected_port), make_handler(preview)
+        )
+    except OSError:
+        if ledger_port is None:
+            raise
+        server = http.server.ThreadingHTTPServer((args.bind, 0), make_handler(preview))
+    server.daemon_threads = True
+    if args.port == 0 and args.port_ledger:
+        write_port_ledger(args.port_ledger, server.server_port)
+    url_hosts = [args.bind]
+    if args.bind in ("0.0.0.0", "::"):
+        url_hosts = ["127.0.0.1", socket.gethostname()]
+        try:
+            url_hosts.extend(
+                subprocess.run(
+                    ["hostname", "-I"], capture_output=True, text=True, check=False
+                ).stdout.split()
+            )
+        except OSError:
+            pass
+        try:
+            url_hosts.extend(
+                subprocess.run(
+                    ["tailscale", "ip", "-4"], capture_output=True, text=True, check=False
+                ).stdout.split()
+            )
+        except OSError:
+            pass
+    url_hosts = list(dict.fromkeys(host for host in url_hosts if host))
+    urls = [
+        f"http://{'[' + host + ']' if ':' in host else host}:{server.server_port}/"
+        for host in url_hosts
+    ]
+    url = urls[0]
+    preview.pidfile.write_text(str(os.getpid()) + "\n")
+    preview.ready.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "url": url,
+                "urls": urls,
+                "bind": args.bind,
+                "port": server.server_port,
+            }
+        )
+        + "\n"
+    )
+
+    def stop(*_):
+        preview.shutdown_requested.set()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    threading.Thread(target=watch, args=(preview,), daemon=True).start()
+    started = time.monotonic()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        while not preview.shutdown_requested.wait(1):
+            if preview.should_stop(started):
+                stop()
+    finally:
+        server.server_close()
+        preview.ready.unlink(missing_ok=True)
+        preview.pidfile.unlink(missing_ok=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

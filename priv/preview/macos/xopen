@@ -1,0 +1,133 @@
+#!/bin/sh
+
+# Open a file or URL with the macOS default application. With --watch, serve a
+# local HTML file through the shared live-preview engine and reload it after
+# every save.
+#
+# Usage: xopen --watch [--no-open] [--maxwait SECONDS] [--bind ADDRESS] [--port PORT] [--root DIRECTORY] FILE.html
+#        xopen FILE_OR_URL [...]
+
+set -e
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+	sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'
+	exit 0
+fi
+
+watch=false
+no_open=false
+bind=127.0.0.1
+port=0
+serve_root=
+network_option=false
+startup_timeout=60
+idle_timeout=12
+maxwait_set=false
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--watch) watch=true; shift ;;
+		--no-open) no_open=true; shift ;;
+		--maxwait)
+			[ "$#" -ge 2 ] || { echo "xopen: --maxwait requires seconds" >&2; exit 2; }
+			case "$2" in ''|*[!0-9]*|0) echo "xopen: --maxwait must be a positive integer" >&2; exit 2 ;; esac
+			startup_timeout=$2; idle_timeout=$2; maxwait_set=true; network_option=true; shift 2 ;;
+		--bind)
+			[ "$#" -ge 2 ] || { echo "xopen: --bind requires an address" >&2; exit 2; }
+			bind=$2; network_option=true; shift 2 ;;
+		--port)
+			[ "$#" -ge 2 ] || { echo "xopen: --port requires a number" >&2; exit 2; }
+			port=$2; network_option=true; shift 2 ;;
+		--root)
+			[ "$#" -ge 2 ] || { echo "xopen: --root requires a directory" >&2; exit 2; }
+			serve_root=$2; network_option=true; shift 2 ;;
+		--) shift; break ;;
+		-*) echo "xopen: unknown option $1" >&2; exit 2 ;;
+		*) break ;;
+	esac
+done
+
+if [ "$watch" = false ] && { [ "$network_option" = true ] || [ "$no_open" = true ]; }; then
+	echo "xopen: --no-open, --maxwait, --bind, --port, and --root require --watch" >&2
+	exit 2
+fi
+
+if [ "$no_open" = true ] && [ "$maxwait_set" = false ]; then
+	startup_timeout=600
+	idle_timeout=600
+fi
+
+if [ "$watch" = true ]; then
+	if [ "$#" -ne 1 ]; then
+		echo "xopen: --watch requires one HTML file" >&2
+		exit 2
+	fi
+	if [ ! -r "$1" ]; then
+		echo "xopen: cannot read $1" >&2
+		exit 1
+	fi
+	case "$1" in
+		*.html|*.htm) ;;
+		*) echo "xopen: --watch supports HTML files" >&2; exit 2 ;;
+	esac
+
+	source_file=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")
+	if [ -n "$serve_root" ]; then
+		[ -d "$serve_root" ] || { echo "xopen: --root is not a directory: $serve_root" >&2; exit 2; }
+		serve_root=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$serve_root")
+	else
+		serve_root=$(git -C "$(dirname -- "$source_file")" rev-parse --show-toplevel 2>/dev/null || dirname -- "$source_file")
+	fi
+	python3 -c 'import os,sys; root,source=map(os.path.realpath,sys.argv[1:]); sys.exit(0 if os.path.commonpath((root,source)) == root else 1)' "$serve_root" "$source_file" || {
+		echo "xopen: source is outside --root: $serve_root" >&2
+		exit 2
+	}
+	script_path=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")
+	script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd)
+	preview_helper="$script_dir/../linux/live-preview"
+	key=$(printf '%s|%s|%s|%s' "$source_file" "$serve_root" "$bind" "$port" | shasum -a 256 | cut -d' ' -f1)
+	port_key=$(printf '%s|%s|%s' "$source_file" "$bind" "$port" | shasum -a 256 | cut -d' ' -f1)
+	runtime_dir=${TMPDIR:-/tmp}
+	state_dir="$runtime_dir/xopen-watch"
+	mkdir -p "$state_dir"
+	ledger_dir="/tmp/xopen-watch-$(id -u)"
+	if [ -L "$ledger_dir" ]; then
+		echo "xopen: unsafe port ledger symlink: $ledger_dir" >&2
+		exit 1
+	fi
+	install -d -m 0700 "$ledger_dir"
+	ledger="$ledger_dir/$port_key.port"
+	pidfile="$state_dir/$key.pid"
+	ready="$state_dir/$key.ready"
+	log="$state_dir/$key.log"
+
+	if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+		url=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$ready")
+		[ -r "$ready" ] && python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(url) for url in data.get("urls", [data["url"]])]' "$ready"
+		[ "$no_open" = true ] || { [ -n "$url" ] && open "$url"; }
+		exit 0
+	fi
+	rm -f "$pidfile" "$ready"
+	# Let the preview engine detach itself: macOS nohup cannot reliably detach
+	# from the pseudo-console used by a headless Coding Agent session.
+	python3 "$preview_helper" --detach --mode html --source "$source_file" \
+		--serve-root "$serve_root" \
+		--bind "$bind" --port "$port" --ready "$ready" --pidfile "$pidfile" \
+		--port-ledger "$ledger" --startup-timeout "$startup_timeout" \
+		--idle-timeout "$idle_timeout" \
+		</dev/null >"$log" 2>&1
+	waited=0
+	while [ ! -s "$ready" ] && [ "$waited" -lt 50 ]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	if [ ! -s "$ready" ]; then
+		echo "xopen: could not start preview; see $log" >&2
+		exit 1
+	fi
+	url=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$ready")
+	python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(url) for url in data.get("urls", [data["url"]])]' "$ready"
+	[ "$no_open" = true ] || open "$url"
+	exit 0
+fi
+
+exec open "$@"

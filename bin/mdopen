@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+self=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")
+root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
+case "$(uname -s)" in
+  Darwin) platform=macos ;;
+  Linux) platform=linux ;;
+  *) echo "mdopen: supported launchers are Linux and macOS" >&2; exit 2 ;;
+esac
+exec "$root/priv/preview/$platform/mdopen" "$@"

@@ -1,0 +1,237 @@
+#!/bin/sh
+
+# Open a Markdown file in the viewer that can actually render it:
+#   - GFM task lists ("- [ ]" / "- [x]")  -> pandoc to HTML, then the browser
+#   - anything else                       -> Okular's Markdown backend
+# Okular's Discount backend does not enable the GitHub-checkbox option, so task
+# lists render as plain list text there.
+#
+# Usage: mdopen [--html|--okular] [--watch] [--bind ADDRESS] [--port PORT] FILE.md [FILE.md ...]
+
+set -e
+
+runtime_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+export DISPLAY=${DISPLAY:-:0}
+export XAUTHORITY=${XAUTHORITY:-"$runtime_dir/gdm/Xauthority"}
+export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-"unix:path=$runtime_dir/bus"}
+
+force=auto
+watch=false
+bind=127.0.0.1
+port=0
+network_option=false
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--html) force=html; shift ;;
+		--okular) force=okular; shift ;;
+		--watch) watch=true; shift ;;
+		--bind) [ "$#" -ge 2 ] || { echo "mdopen: --bind requires an address" >&2; exit 2; }; bind=$2; network_option=true; shift 2 ;;
+		--port) [ "$#" -ge 2 ] || { echo "mdopen: --port requires a number" >&2; exit 2; }; port=$2; network_option=true; shift 2 ;;
+		--help|-h) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		--) shift; break ;;
+		-*) echo "mdopen: unknown option $1" >&2; exit 2 ;;
+		*) break ;;
+	esac
+done
+
+if [ "$watch" = false ] && [ "$network_option" = true ]; then
+	echo "mdopen: --bind and --port require --watch" >&2
+	exit 2
+fi
+
+if [ $# -eq 0 ]; then
+	echo "mdopen: no file given" >&2
+	exit 2
+fi
+
+okular_cmd() {
+	if command -v okular >/dev/null 2>&1; then
+		okular "$@"
+	else
+		flatpak run org.kde.okular "$@"
+	fi
+}
+
+has_tasks() {
+	grep -qE '^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+\[[ xX]\]([[:space:]]|$)' "$1"
+}
+
+# Snap browsers (Firefox/Chromium here) are confined by AppArmor to
+# "owner @{HOME}/[^s.]**", so anything under a dot-directory such as
+# ~/.cache is unreadable to them. Render into a visible directory instead.
+render_dir=${MDOPEN_DIR:-$(xdg-user-dir DOCUMENTS 2>/dev/null || echo "$HOME")/mdopen}
+mkdir -p "$render_dir"
+script_path=$(readlink -f "$0")
+script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd)
+preview_helper="$script_dir/live-preview"
+
+
+cat > "$render_dir/mdopen.css" <<'CSS'
+html { font-size: 16px; }
+body {
+	max-width: 46rem;
+	margin: 2rem auto;
+	padding: 0 1.2rem;
+	font-family: system-ui, sans-serif;
+	line-height: 1.55;
+}
+code, pre { font-family: ui-monospace, monospace; }
+pre { padding: .8rem; overflow-x: auto; background: #f4f4f4; }
+table { border-collapse: collapse; }
+td, th { border: 1px solid #bbb; padding: .3rem .6rem; }
+ul.task-list { list-style: none; padding-left: 1.2rem; }
+ul.task-list input[type=checkbox] { margin-right: .5rem; cursor: default; }
+.mdopen-source {
+	margin-bottom: .35rem;
+	color: #68707c;
+	font-size: .78rem;
+}
+.attention-pill {
+	display: inline-block;
+	margin-left: .35rem;
+	border: 1px solid #b86600;
+	border-radius: 999px;
+	padding: .12rem .48rem;
+	background: #fff3db;
+	color: #7a4200;
+	font: 700 .72rem/1.3 system-ui, sans-serif;
+	vertical-align: .15em;
+}
+@media (prefers-color-scheme: dark) {
+	body { background: #14161a; color: #e6e6e6; }
+	pre { background: #22262c; }
+	a { color: #7fb2ff; }
+	td, th { border-color: #444; }
+	.mdopen-source { color: #a7afba; }
+	.attention-pill { border-color: #ffb340; background: #4a2d00; color: #ffd28a; }
+}
+CSS
+
+document_title() {
+	title=$(sed -n 's/^#[[:space:]][[:space:]]*//p' "$1" | head -n 1)
+	if [ -n "$title" ]; then printf '%s\n' "$title"; else printf '%s\n' "$2"; fi
+}
+
+write_source_label() {
+	label=$(basename "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')
+	cat > "$2" <<EOF
+<div class="mdopen-source"><code>$label</code></div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('ul.task-list input[type="checkbox"]').forEach((checkbox) => {
+    checkbox.disabled = true;
+    checkbox.title = 'Read-only Markdown preview';
+  });
+});
+</script>
+EOF
+}
+
+open_url() {
+	if command -v xopen >/dev/null 2>&1; then
+		xopen "$1" </dev/null >/dev/null 2>&1 &
+	else
+		xdg-open "$1" </dev/null >/dev/null 2>&1 &
+	fi
+}
+
+start_watch() {
+	source_file=$1
+	base=$2
+	if [ "$force" = okular ]; then
+		echo "mdopen: --watch only supports the HTML preview" >&2
+		exit 2
+	fi
+	if [ ! -x "$preview_helper" ]; then
+		echo "mdopen: preview helper is missing: $preview_helper" >&2
+		exit 1
+	fi
+
+	key=$(printf '%s|%s|%s' "$source_file" "$bind" "$port" | sha256sum | cut -d' ' -f1)
+	state_dir="$runtime_dir/mdopen-watch"
+	mkdir -p "$state_dir"
+	ledger_dir="/tmp/mdopen-watch-$(id -u)"
+	if [ -L "$ledger_dir" ]; then
+		echo "mdopen: unsafe port ledger symlink: $ledger_dir" >&2
+		exit 1
+	fi
+	install -d -m 0700 "$ledger_dir"
+	ledger="$ledger_dir/$key.port"
+	pidfile="$state_dir/$key.pid"
+	ready="$state_dir/$key.ready"
+	log="$state_dir/$key.log"
+	source_label="$state_dir/$key-source-label.html"
+	out="$render_dir/$base.html"
+	write_source_label "$source_file" "$source_label"
+
+	if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+		if [ -r "$ready" ]; then
+			url=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$ready")
+			python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(url) for url in data.get("urls", [data["url"]])]' "$ready"
+			[ -n "$url" ] && open_url "$url"
+		fi
+		return
+	fi
+	rm -f "$pidfile" "$ready"
+	setsid python3 "$preview_helper" \
+		--mode markdown \
+		--source "$source_file" --output "$out" --css "$render_dir/mdopen.css" \
+		--source-label "$source_label" --fallback-title "$base" \
+		--bind "$bind" --port "$port" \
+		--ready "$ready" --pidfile "$pidfile" \
+		--port-ledger "$ledger" \
+		</dev/null >"$log" 2>&1 &
+	watcher_pid=$!
+	waited=0
+	while [ ! -s "$ready" ] && [ "$waited" -lt 50 ]; do
+		if ! kill -0 "$watcher_pid" 2>/dev/null; then break; fi
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	if [ ! -s "$ready" ]; then
+		echo "mdopen: could not start preview; see $log" >&2
+		exit 1
+	fi
+	url=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$ready")
+	python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(url) for url in data.get("urls", [data["url"]])]' "$ready"
+	open_url "$url"
+}
+
+for f; do
+	if [ ! -r "$f" ]; then
+		echo "mdopen: cannot read $f" >&2
+		exit 1
+	fi
+
+	f=$(readlink -f "$f")
+	base=$(basename "$f" | sed 's/\.[Mm][Dd]$//')
+	title=$(document_title "$f" "$base")
+	if [ "$watch" = true ]; then
+		start_watch "$f" "$base"
+		continue
+	fi
+
+	mode=$force
+	if [ "$mode" = auto ]; then
+		if has_tasks "$f"; then mode=html; else mode=okular; fi
+	fi
+
+	if [ "$mode" = okular ]; then
+		okular_cmd "$f" </dev/null >/dev/null 2>&1 &
+		continue
+	fi
+
+	out="$render_dir/$base.html"
+	key=$(printf '%s' "$f" | sha256sum | cut -d' ' -f1)
+	source_label="$render_dir/$key-source-label.html"
+	write_source_label "$f" "$source_label"
+	pandoc "$f" \
+		--from=gfm \
+		--to=html5 \
+		--standalone \
+		--metadata pagetitle="$title" \
+		--include-before-body="$source_label" \
+		--css="$render_dir/mdopen.css" \
+		--output="$out"
+	xdg-open "$out" </dev/null >/dev/null 2>&1 &
+done
