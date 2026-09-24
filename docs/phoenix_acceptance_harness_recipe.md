@@ -2,7 +2,7 @@
 
 Use this recipe for recording evidence and mounting the authenticated reviewer.
 For portable HTML/Markdown review, start with [standalone tools](standalone.md).
-The example pins the 0.11.0 release, including cumulative review activity and portable tools.
+The public example follows `main` for development. Pin a reviewed GitHub commit for deployments; this mirror does not publish release tags.
 
 ## 1. Add the dependency
 
@@ -10,13 +10,13 @@ The example pins the 0.11.0 release, including cumulative review activity and po
 defp deps do
   [
     {:acceptance_harness,
-     git: "git@framagit.org:olivierg/acceptance_harness.git",
-     tag: "v0.11.0"}
+     git: "https://github.com/ogourment/acceptance_harness.git",
+     branch: "main"}
   ]
 end
 ```
 
-For Framagit CI, allow the consuming project to read `olivierg/acceptance_harness`, or provide a CI token through the dependency URL helper used by the app.
+The public GitHub code mirror needs no Framagit credential. It has no release tags; use a reviewed GitHub commit for reproducible builds.
 
 ## 2. Configure the harness in `config/test.exs`
 

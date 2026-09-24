@@ -15,6 +15,8 @@ bin/xopen --watch /absolute/path/review.html
 For Phoenix integration, see the [integration guide](docs/phoenix_acceptance_harness_recipe.md).
 The [standalone guide](docs/standalone.md) covers platform prerequisites, and
 the [reference](docs/reference.md) covers configuration and Mix commands.
+The public mirror has no release tags. Use `main` while developing a change,
+then pin a reviewed GitHub commit for a reproducible build.
 
 ## Contribute
 

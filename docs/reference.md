@@ -178,12 +178,12 @@ and raw `.ansi` artifacts through the existing terminal evidence surface.
 
 ## Install
 
-Use a pinned private Git dependency in consuming apps:
+For public development, use the code mirror. Pin a reviewed GitHub commit for reproducible builds; public release tags are not available:
 
 ```elixir
 {:acceptance_harness,
- git: "git@framagit.org:olivierg/acceptance_harness.git",
-      tag: "v0.10.8"}
+ git: "https://github.com/ogourment/acceptance_harness.git",
+      branch: "main"}
 ```
 
 During local extraction from Agile-U, a path dependency can be used:
