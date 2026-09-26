@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.3 - 2026-09-25
+
+- Serve mdopen's watched Markdown page when its source is outside the rendered
+  output directory, including the generated stylesheet and live controls.
+
 ## 0.11.2 - 2026-09-22
 
 - Hide xopen's floating status controls while a visible native dialog or ARIA

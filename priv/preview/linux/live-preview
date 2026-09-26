@@ -22,7 +22,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 
 DEFAULT_PATH_BOUNDARY_REGEX = r"tmp"
-VERSION = "0.11.0"
+VERSION = "0.11.3"
 
 
 def read_port_ledger(path):
@@ -219,9 +219,15 @@ class Preview:
         source = Path(linked_source) if linked_source is not None else self.source
         revision = revision or hashlib.sha256(data.encode("utf-8")).hexdigest()
         if not re.search(r"<base\b", data, flags=re.IGNORECASE):
-            relative_parent = source.resolve().parent.relative_to(self.serve_root)
-            relative_url = quote(relative_parent.as_posix(), safe="/")
-            base_href = "/" if relative_url == "." else f"/{relative_url}/"
+            try:
+                relative_parent = source.resolve().parent.relative_to(self.serve_root)
+            except ValueError:
+                # mdopen renders outside the source tree and serves its CSS
+                # from the output directory. Keep the generated page usable.
+                base_href = "/"
+            else:
+                relative_url = quote(relative_parent.as_posix(), safe="/")
+                base_href = "/" if relative_url == "." else f"/{relative_url}/"
             base_element = f'<base href="{base_href}">'
             head = re.search(r"<head(?:\s[^>]*)?>", data, flags=re.IGNORECASE)
             if head:

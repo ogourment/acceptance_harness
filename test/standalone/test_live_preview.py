@@ -168,6 +168,48 @@ def test_server_resolves_repository_links_from_configured_root(tmp_path):
         worker.join(timeout=3)
 
 
+def test_markdown_preview_serves_root_when_source_is_outside_output_dir(tmp_path):
+    import http.server
+
+    source = tmp_path / "project" / "handoff.md"
+    output = tmp_path / "Documents" / "mdopen" / "handoff.html"
+    source.parent.mkdir()
+    output.parent.mkdir(parents=True)
+    source.write_text("# Handoff\n", encoding="utf-8")
+    output.write_text(
+        '<html><head><link rel="stylesheet" href="mdopen.css"></head>'
+        '<body><main>Handoff</main></body></html>', encoding="utf-8"
+    )
+    (output.parent / "mdopen.css").write_text("body { color: blue; }", encoding="utf-8")
+    preview = Preview(SimpleNamespace(
+        source=str(source), output=str(output), css=None, source_label=None,
+        fallback_title="Handoff", path_boundary_regex=r"tmp", mode="markdown",
+        ready=str(tmp_path / "ready"), pidfile=str(tmp_path / "pid"),
+        idle_timeout=12, startup_timeout=60,
+    ))
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), MODULE["make_handler"](preview)
+    )
+    server.daemon_threads = True
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        with urllib.request.urlopen(f"{base}/") as response:
+            rendered = response.read().decode()
+            assert response.status == 200
+            assert '<base href="/">' in rendered
+            assert "Handoff" in rendered
+            assert "live-preview-status" in rendered
+        with urllib.request.urlopen(f"{base}/mdopen.css") as response:
+            assert response.read() == b"body { color: blue; }"
+    finally:
+        preview.shutdown_requested.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)
+
+
 def test_linked_markdown_heartbeat_tracks_its_own_source(tmp_path):
     if not shutil.which("pandoc"):
         pytest.skip("pandoc is required")
