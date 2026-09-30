@@ -22,7 +22,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 
 DEFAULT_PATH_BOUNDARY_REGEX = r"tmp"
-VERSION = "0.11.3"
+VERSION = "0.11.4"
 
 
 def read_port_ledger(path):
@@ -154,6 +154,11 @@ class Preview:
         )
         return result.stdout
 
+    def render_linked_document(self, source):
+        if source.suffix.lower() in (".html", ".htm"):
+            return source.read_text(encoding="utf-8")
+        return self.render_linked_markdown(source)
+
     def document_title_for(self, source):
         try:
             for line in Path(source).read_text(encoding="utf-8").splitlines():
@@ -168,11 +173,11 @@ class Preview:
         # repairs a missed polling iteration or a stalled watcher thread.
         if linked_source is not None:
             try:
-                rendered = self.render_linked_markdown(linked_source)
+                rendered = self.render_linked_document(linked_source)
                 return {"revision": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
                         "error": None, "checked_at": round(time.time() * 1000),
                         "version": VERSION}
-            except (OSError, subprocess.SubprocessError):
+            except (OSError, UnicodeError, subprocess.SubprocessError):
                 return {"revision": None, "error": "Source unavailable",
                         "checked_at": round(time.time() * 1000), "version": VERSION}
         with self.render_lock:
@@ -210,7 +215,7 @@ class Preview:
     def html(self, linked_source=None):
         source = Path(linked_source) if linked_source is not None else self.source
         with self.render_lock:
-            data = (self.render_linked_markdown(source) if linked_source is not None
+            data = (self.render_linked_document(source) if linked_source is not None
                     else self.output.read_bytes().decode("utf-8"))
         return self.decorate(data, linked_source)
 
@@ -552,7 +557,7 @@ def make_handler(preview):
                 )
                 client_id = unquote(query.get("client", ""))
                 linked_source = self.safe_target(unquote(query.get("source", "")))
-                if query.get("source") and (linked_source is None or linked_source.suffix.lower() not in (".md", ".markdown")):
+                if query.get("source") and (linked_source is None or linked_source.suffix.lower() not in (".md", ".markdown", ".html", ".htm")):
                     self.send_error(404)
                     return
                 if not client_id:
@@ -595,7 +600,7 @@ def make_handler(preview):
                 if target is None:
                     self.send_error(404)
                     return
-                if target.suffix.lower() in (".md", ".markdown"):
+                if target.suffix.lower() in (".md", ".markdown", ".html", ".htm"):
                     try:
                         data = preview.html(target).encode()
                     except (OSError, UnicodeError, subprocess.SubprocessError):

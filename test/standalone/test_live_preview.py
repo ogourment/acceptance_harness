@@ -377,11 +377,10 @@ def test_tmp_tree_preserves_repository_context():
     assert short_source_path(source) == "repo-ui-toolbox/.../index.html"
 
 
-def test_tmp_tree_preserves_meaningful_descendants():
-    source = (
-        "/home/olivierg/work/elixir/ecojeux/tmp/atdd-review/"
-        "alliances-francaises-training/index.html"
-    )
+def test_tmp_tree_preserves_meaningful_descendants(tmp_path):
+    source = tmp_path / "ecojeux/tmp/atdd-review/alliances-francaises-training/index.html"
+    source.parent.mkdir(parents=True)
+    source.write_text("<html></html>")
 
     assert short_source_path(source) == (
         "ecojeux/.../alliances-francaises-training/index.html"

@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Acceptance.UpdateAgents do
 
   @start_marker "<!-- acceptance-harness:atdd-worktree-ports:start -->"
   @end_marker "<!-- acceptance-harness:atdd-worktree-ports:end -->"
-  @guidance_version "0.11.3"
+  @guidance_version "0.11.4"
 
   @guidance """
   #{@start_marker}

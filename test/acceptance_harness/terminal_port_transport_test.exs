@@ -44,7 +44,7 @@ defmodule AcceptanceHarness.Terminal.PortTransportTest do
                helper_path: @helper
              )
 
-    initial = collect_until(session, &String.contains?(&1, "initial:33 91"))
+    initial = collect_until(session, &String.contains?(&1, "initial:33 91\r\n"))
     assert initial =~ "initial:33 91\r\n"
 
     assert :ok = PortTransport.resize(session, 21, 72)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.4 - 2026-09-29
+
+- Keep live-preview controls and automatic refresh when following linked HTML
+  pages from xopen or mdopen, with updates tracked for each linked page.
+
 ## 0.11.3 - 2026-09-25
 
 - Serve mdopen's watched Markdown page when its source is outside the rendered
