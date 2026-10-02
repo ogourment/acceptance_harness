@@ -27,6 +27,7 @@ while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--watch) watch=true; shift ;;
 		--no-open) no_open=true; shift ;;
+		--workspace) echo "xopen: --workspace is available only on Linux X11" >&2; exit 2 ;;
 		--maxwait)
 			[ "$#" -ge 2 ] || { echo "xopen: --maxwait requires seconds" >&2; exit 2; }
 			case "$2" in ''|*[!0-9]*|0) echo "xopen: --maxwait must be a positive integer" >&2; exit 2 ;; esac

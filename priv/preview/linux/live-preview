@@ -22,7 +22,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 
 DEFAULT_PATH_BOUNDARY_REGEX = r"tmp"
-VERSION = "0.11.4"
+VERSION = "0.11.5"
 
 
 def read_port_ledger(path):

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.5 - 2026-10-01
+
+- Add `--workspace NUMBER` to Linux X11 `xopen` and `mdopen` previews. It opens
+  a new Firefox window on the requested one-based GNOME workspace and verifies
+  its placement without moving an existing window. Unsupported desktops and
+  browser defaults fail explicitly.
+
 ## 0.11.4 - 2026-09-29
 
 - Keep live-preview controls and automatic refresh when following linked HTML

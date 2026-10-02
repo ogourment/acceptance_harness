@@ -6,7 +6,7 @@
 # Okular's Discount backend does not enable the GitHub-checkbox option, so task
 # lists render as plain list text there.
 #
-# Usage: mdopen [--html|--okular] [--watch] [--bind ADDRESS] [--port PORT] FILE.md [FILE.md ...]
+# Usage: mdopen [--html|--okular] [--watch] [--workspace NUMBER] [--bind ADDRESS] [--port PORT] FILE.md [FILE.md ...]
 
 set -e
 
@@ -17,6 +17,7 @@ export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-"unix:path=$runtime_
 
 force=auto
 watch=false
+workspace=
 bind=127.0.0.1
 port=0
 network_option=false
@@ -25,6 +26,7 @@ while [ $# -gt 0 ]; do
 		--html) force=html; shift ;;
 		--okular) force=okular; shift ;;
 		--watch) watch=true; shift ;;
+		--workspace) [ "$#" -ge 2 ] || { echo "mdopen: --workspace requires a number" >&2; exit 2; }; workspace=$2; shift 2 ;;
 		--bind) [ "$#" -ge 2 ] || { echo "mdopen: --bind requires an address" >&2; exit 2; }; bind=$2; network_option=true; shift 2 ;;
 		--port) [ "$#" -ge 2 ] || { echo "mdopen: --port requires a number" >&2; exit 2; }; port=$2; network_option=true; shift 2 ;;
 		--help|-h) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -37,6 +39,11 @@ done
 if [ "$watch" = false ] && [ "$network_option" = true ]; then
 	echo "mdopen: --bind and --port require --watch" >&2
 	exit 2
+fi
+if [ -n "$workspace" ]; then
+	case "$workspace" in ''|*[!0-9]*|0) echo "mdopen: --workspace must be a one-based positive desktop number" >&2; exit 2 ;; esac
+	[ "$force" != okular ] || { echo "mdopen: --workspace requires the HTML preview" >&2; exit 2; }
+	force=html
 fi
 
 if [ $# -eq 0 ]; then
@@ -129,8 +136,13 @@ EOF
 
 open_url() {
 	if command -v xopen >/dev/null 2>&1; then
-		xopen "$1" </dev/null >/dev/null 2>&1 &
+		if [ -n "$workspace" ]; then
+			xopen --workspace "$workspace" "$1"
+		else
+			xopen "$1" </dev/null >/dev/null 2>&1 &
+		fi
 	else
+		[ -z "$workspace" ] || { echo "mdopen: --workspace requires xopen" >&2; exit 1; }
 		xdg-open "$1" </dev/null >/dev/null 2>&1 &
 	fi
 }
@@ -233,5 +245,5 @@ for f; do
 		--include-before-body="$source_label" \
 		--css="$render_dir/mdopen.css" \
 		--output="$out"
-	xdg-open "$out" </dev/null >/dev/null 2>&1 &
+	open_url "$out"
 done

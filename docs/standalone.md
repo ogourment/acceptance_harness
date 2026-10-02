@@ -6,6 +6,19 @@ Python standard library code. Markdown additionally requires Pandoc. Browser
 opening uses macOS `open` or Linux `xdg-open`; Linux PDF preview optionally uses
 Okular. Windows launchers are not yet verified.
 
+On Linux X11 with Firefox as the default browser, use `--workspace NUMBER` to
+open the preview in a new Firefox window on that one-based GNOME workspace:
+
+```sh
+bin/xopen --watch --workspace 5 /absolute/path/review.html
+bin/mdopen --watch --workspace 5 /absolute/path/notes.md
+```
+
+The command verifies the new window's workspace and leaves existing browser
+windows in place. It does not switch the active desktop. It fails explicitly
+when the desktop number, session, or default browser cannot support placement.
+macOS Spaces and Linux Wayland do not support this option yet.
+
 ```sh
 bin/xopen --watch /absolute/path/review.html
 bin/mdopen --watch /absolute/path/notes.md
@@ -93,3 +106,7 @@ directly with Python. Consumers must preserve the evidence-producing job depende
 and the production gate, and remove dependency installation only from this
 artifact-checking job. This is a rollout recipe; existing consumer pipelines have
 not automatically switched to it.
+
+## Review content opened with xopen or mdopen
+
+Every screenshot in a review bundle must be preceded by its full, selectable page URL. Offer a live-page link and a rendered HTML snapshot link/tab so the reviewer can reopen the page or copy its text. Retain these controls in presentation/lightbox mode. Captured CI URLs may no longer be reachable: label them and supply a current dev equivalent where available. Follow the redaction, inert-snapshot and verification requirements in [Screenshot URLs and copyable HTML](acceptance-contract.md#screenshot-urls-and-copyable-html). The preview server does not infer missing source URLs from image filenames; bundle authors must supply them.

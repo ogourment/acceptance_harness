@@ -16,6 +16,7 @@ while [ "$#" -gt 0 ]; do
 		--html) shift ;;
 		--okular) echo "mdopen: --okular is only available on Linux" >&2; exit 2 ;;
 		--watch) watch=true; shift ;;
+		--workspace) echo "mdopen: --workspace is available only on Linux X11" >&2; exit 2 ;;
 		--bind) [ "$#" -ge 2 ] || { echo "mdopen: --bind requires an address" >&2; exit 2; }; bind=$2; network_option=true; shift 2 ;;
 		--port) [ "$#" -ge 2 ] || { echo "mdopen: --port requires a number" >&2; exit 2; }; port=$2; network_option=true; shift 2 ;;
 		--help|-h) sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

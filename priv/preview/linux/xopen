@@ -4,8 +4,8 @@
 # caller did not inherit the GUI variables. With --watch, serve a local HTML
 # file through the shared live-preview engine and reload it after every save.
 #
-# Usage: xopen --watch [--no-open] [--maxwait SECONDS] [--bind ADDRESS] [--port PORT] [--root DIRECTORY] FILE.html
-#        xopen FILE_OR_URL [...]
+# Usage: xopen --watch [--no-open] [--workspace NUMBER] [--maxwait SECONDS] [--bind ADDRESS] [--port PORT] [--root DIRECTORY] FILE.html
+#        xopen [--workspace NUMBER] FILE_OR_URL [...]
 
 set -e
 
@@ -22,6 +22,7 @@ fi
 
 watch=false
 no_open=false
+workspace=
 bind=127.0.0.1
 port=0
 serve_root=
@@ -33,6 +34,7 @@ while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--watch) watch=true; shift ;;
 		--no-open) no_open=true; shift ;;
+		--workspace) [ "$#" -ge 2 ] || { echo "xopen: --workspace requires a number" >&2; exit 2; }; workspace=$2; shift 2 ;;
 		--maxwait)
 			[ "$#" -ge 2 ] || { echo "xopen: --maxwait requires seconds" >&2; exit 2; }
 			case "$2" in ''|*[!0-9]*|0) echo "xopen: --maxwait must be a positive integer" >&2; exit 2 ;; esac
@@ -61,6 +63,22 @@ if [ "$no_open" = true ] && [ "$maxwait_set" = false ]; then
 	startup_timeout=600
 	idle_timeout=600
 fi
+
+if [ -n "$workspace" ]; then
+	case "$workspace" in ''|*[!0-9]*|0) echo "xopen: --workspace must be a one-based positive desktop number" >&2; exit 2 ;; esac
+	[ "$no_open" = false ] || { echo "xopen: --workspace and --no-open cannot be combined" >&2; exit 2; }
+	script_path=$(readlink -f "$0")
+	workspace_opener="$(dirname -- "$script_path")/open-workspace.py"
+	[ -r "$workspace_opener" ] || { echo "xopen: workspace opener is missing" >&2; exit 1; }
+fi
+
+open_target() {
+	if [ -n "$workspace" ]; then
+		python3 "$workspace_opener" "$workspace" "$1"
+	else
+		xdg-open "$1" </dev/null >/dev/null 2>&1 &
+	fi
+}
 
 if [ "$watch" = true ]; then
 	if [ "$#" -ne 1 ]; then
@@ -108,9 +126,7 @@ if [ "$watch" = true ]; then
 	if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
 		url=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$ready")
 		[ -r "$ready" ] && python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(url) for url in data.get("urls", [data["url"]])]' "$ready"
-		if [ "$no_open" = false ] && [ -n "$url" ]; then
-			xdg-open "$url" </dev/null >/dev/null 2>&1 &
-		fi
+		if [ "$no_open" = false ] && [ -n "$url" ]; then open_target "$url"; fi
 		exit 0
 	fi
 	rm -f "$pidfile" "$ready"
@@ -133,10 +149,13 @@ if [ "$watch" = true ]; then
 	fi
 	url=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$ready")
 	python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); [print(url) for url in data.get("urls", [data["url"]])]' "$ready"
-	if [ "$no_open" = false ]; then
-		xdg-open "$url" </dev/null >/dev/null 2>&1 &
-	fi
+	if [ "$no_open" = false ]; then open_target "$url"; fi
 	exit 0
 fi
 
-exec xdg-open "$@"
+if [ -n "$workspace" ]; then
+	[ "$#" -eq 1 ] || { echo "xopen: --workspace requires one URL or HTML file" >&2; exit 2; }
+	open_target "$1"
+else
+	exec xdg-open "$@"
+fi

@@ -318,27 +318,22 @@ glance without compromising the evidence:
   and disclose material departures from the preview. Keep this proportional
   and use the same item, ask and context in the page and deck.
 
-- Keep captured screenshots immutable. Draw annotations as HTML/CSS overlays
-  in the review page, never into the PNG itself, and link to the clean image.
-- On each after screenshot, outline every materially changed region. Make the
-  outline slightly larger than the content it identifies so its border never
-  crosses text, controls, or the first/last changed row.
-- Put each annotation label outside the screenshot. Use a high-contrast label
-  (white text on an amber/orange background) that names the intended change;
-  never place the label over page content.
-  Build labels, outlines, arrows, and explanatory inserts as positioned
-  HTML/CSS review elements around an immutable image—never bake them into the
-  PNG. Verify their coordinates in a real browser at the rendered thumbnail
-  and enlarged-preview sizes; a misplaced label is failed evidence. When a
-  proposed UI does not exist yet, pair the current screenshot with a clearly
-  labelled HTML insert or code-native mock showing the intended structure.
-  A current screenshot plus prose alone is not adequate visual review of a
-  new layout.
-- Use separate outlines for non-contiguous changes rather than one oversized
-  box that makes the reviewer infer what changed. Before screenshots normally
-  remain unannotated.
-- Treat overlays as review navigation, not evidence. Always provide a direct
-  open/download link for each clean before and after screenshot.
+- Make differences explicit: above each changed Before/After pair, show short,
+  colored “− Before” / “+ After” phrases naming the exact changed wording or
+  behavior. “Compare the screenshots” is not a useful validation ask. Match
+  numbered text callouts to separate outlines around the corresponding changed
+  regions on both screenshots; never highlight an entire page for a small edit.
+- Preserve immutable screenshots. Render outlines and numbered markers as
+  HTML/CSS overlays; keep descriptive labels outside the image and provide clean
+  originals. Use contrasting before/after colors plus words and numbers, so color
+  is not the only signal. Keep unchanged context quiet and overlays switchable.
+- Check coordinates, legibility and overlay alignment at thumbnail, enlarged,
+  zoomed and phone sizes in the real browser. Borders and markers must not cover
+  text or controls. Misaligned highlights are failed presentation evidence.
+- If the proposed UI does not exist, show a clearly labelled HTML/code-native
+  mock beside the highlighted current screenshot. Neither a mock nor an overlay
+  is execution evidence. Lead with the current changes in a compact sequence;
+  keep complete scenarios and history available through direct detail links.
 - Render every exact scenario diff directly inside the review page and deck
   with semantic line colors: green additions, red removals, amber hunk
   headers, and muted file metadata. Preserve a link to the clean raw diff as
@@ -533,3 +528,22 @@ runs `mix test`, `mix precommit`, `mix ecto.*`, or ATDD must also set a unique
 database owner when needed. Never migrate a shared test database from a
 worktree: an unmerged migration can contaminate another checkout's schema
 artifacts and tests.
+
+### Screenshot URLs and copyable HTML
+
+- Immediately before every screenshot, display the full absolute page URL as
+  selectable text and a clickable link. Repeat it in the presentation/lightbox;
+  do not hide it in a caption, tooltip, filename or generic “open” label.
+  Include scheme, host, port, path and meaningful query/fragment. Redact secrets
+  and authentication tokens, label the redaction, and offer a safe entry URL.
+- Beside the URL, provide “Open live page” and “Open rendered HTML” links (or
+  tabs). The rendered HTML must expose selectable page text, preserve the captured
+  state, and be labelled as a snapshot with its capture time. Raw source downloads
+  supplement it; screenshots alone are insufficient when HTML can be retained.
+- Distinguish the original captured URL from an available current/dev equivalent.
+  Never imply an expired CI localhost URL or a static snapshot is interactive.
+  Label authentication prerequisites and unavailable live environments explicitly.
+  If HTML is unavailable, state why for that item instead of silently omitting it.
+- Verify both links and text selection in the normal page and presentation views.
+  Keep snapshots inert (no submissions, tracking or live scripts), remove secrets
+  and private input values, and preserve legitimate synthetic review content.

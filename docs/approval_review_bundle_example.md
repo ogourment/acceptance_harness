@@ -18,8 +18,9 @@ Lead with a TLDR overview and a prominent **Start presentation · 4 items**.
 Use these four questions as the default narrative, combining proportional context:
 
 1. **Why / decision:** the user outcome, reason for the change and recommendation.
-2. **What changes:** the important before/proposed or before/after experience and
-   the precise behavior being agreed; show reuse/simplification briefly.
+2. **What changes:** short colored “− Before” / “+ After” phrases, numbered to
+   matching screenshot outlines. Name the exact wording/behavior, not “compare
+   the screenshots”; show reuse/simplification briefly.
 3. **Proof / limits:** verification results, meaningful risks, external effects,
    schema impact when present, and links to exact evidence and governing diffs.
 4. **Action / status:** the smallest remaining approval or next action, and what
@@ -137,10 +138,11 @@ these eight items in this order:
   image for unchanged evidence.
 - A previous-release screenshot is never shown alone as current evidence. Pair
   it with the corresponding current/proposed state on the same item and slide.
-- Put annotation labels outside the image as HTML, with an HTML/CSS outline over
-  the immutable screenshot. Browser-check the coordinates. When the new UI does
-  not exist, add a labelled HTML insert or code-native mock beside the current
-  screenshot so the visual intent is reviewable before implementation.
+- Put numbered, colored before/after text callouts above each pair; use matching
+  HTML/CSS outlines on both immutable images to locate each change. Keep labels
+  outside images, unchanged context quiet, and originals accessible. Check
+  alignment and legibility through zoom/fit and on phones; never make the reader
+  hunt for small differences. Proposed UI uses a labelled HTML/code-native mock.
 - Email evidence shows the actual delivered message in an email wrapper with
   subject, safe envelope, rendered body, footer, and styling.
 - The bundle identifies `PROPOSAL` or `COMPLETED EVIDENCE`, worktree, commit,
@@ -210,3 +212,7 @@ Recommendation: <approve, defer, reduce, or reject—and why>
 Do not describe token spend as if it were the product outcome. The preamble
 exists to justify the expected value relative to cost and risk, not to pressure
 the reviewer into approval.
+
+## Required links above each screenshot
+
+Apply [Screenshot URLs and copyable HTML](acceptance-contract.md#screenshot-urls-and-copyable-html) to every before/after item and its presentation view: show the full absolute page URL before the image, an explicit live-page link, and a rendered, selectable HTML snapshot link/tab. Label unavailable or redacted URLs and snapshot capture times. Verify the links and copying behavior.

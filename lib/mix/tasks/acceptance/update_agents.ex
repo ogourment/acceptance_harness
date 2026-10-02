@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Acceptance.UpdateAgents do
 
   @start_marker "<!-- acceptance-harness:atdd-worktree-ports:start -->"
   @end_marker "<!-- acceptance-harness:atdd-worktree-ports:end -->"
-  @guidance_version "0.11.4"
+  @guidance_version "0.11.5"
 
   @guidance """
   #{@start_marker}
@@ -78,10 +78,10 @@ defmodule Mix.Tasks.Acceptance.UpdateAgents do
     UI/style guidance, AGENTS/CLAUDE, policies, runbooks, architecture and plans.
     Green additions, red removals, amber hunks; raw links are secondary. Keep these
     readable in the page and optional detail deck, not hidden in an unstyled tab.
-  - Preserve immutable screenshots and clean originals; changed states use one
-    Before/After composite, unchanged states one image. Put labels outside images
-    and overlays around changed regions. Follow the guide's accessible zoom/fit
-    controls and verify every deck sequence in a real browser.
+  - Show exact colored “− Before” / “+ After” phrases with matching numbered
+    outlines on both immutable screenshots; never ask readers to hunt for changes.
+    Keep labels outside images, originals accessible and unchanged context quiet.
+    Browser-check every sequence, overlay alignment, zoom/fit and phone layout.
   - The reviewer owns local xopen; provide the canonical absolute path. For requested
     tailnet review, use one explicit reachable server and verify it from the target
     device. Never redirect the watched page or reuse another worktree's server.

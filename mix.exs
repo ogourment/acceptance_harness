@@ -4,7 +4,7 @@ defmodule AcceptanceHarness.MixProject do
   def project do
     [
       app: :acceptance_harness,
-      version: "0.11.4",
+      version: "0.11.5",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
