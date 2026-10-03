@@ -102,8 +102,21 @@ silently ending the evidence at the preceding successful capture. The normal
 
 ## Incremental acceptance coverage
 
-Commit messages may include short area markers such as `#participants` or
-`#surveys`. These markers must resolve to the consumer's canonical acceptance
+Present proposed commit markers in a **`#atdd-tags` validation scope** within
+the same review bundle and approval request as proposed scenario-contract
+changes; do not leave them implicit until commit time. Show current/proposed
+markers (for example `#participants` or `#surveys`), their canonical metadata
+or alias resolution and selected stable scenario IDs, changed-path mappings,
+mandatory cross-role smoke IDs, and remaining/full-suite coverage with its
+fallback reason. Distinguish configured selection from a proposal: without
+consumer wiring, report that full selection still applies. If no contract
+changes are needed, present this scope with the implementation review. Reuse
+existing review states so approved tags are not reopened routinely; materially
+changed mappings or selection require renewed scope review. Tag approval never
+authorizes weakening a scenario contract. `#atdd-tags` names the review section,
+not an additional commit marker or scenario taxonomy.
+
+Commit markers must resolve to the consumer's canonical acceptance
 scenario tags, capabilities, value streams, or roles; they are not a separate
 taxonomy. Scenario tags are the target vocabulary, not an automatic source
 impact map: changed-path rules translate source files into those tags.
@@ -303,10 +316,19 @@ glance without compromising the evidence:
 
 - Include an `Implementation preview · Reuse and simplification` item before
   schema and external-system impact. Show the planned code shape with a short
-  code excerpt or request-flow sketch, naming the owning repositories and
-  layers. Identify existing helpers, packages and infrastructure rules reused,
-  their inspected versions, code removed or simplified, and the minimum new
-  code still needed. Explicitly identify duplicated responsibilities and
+  code excerpt or request-flow sketch and a compact ownership map: behavior →
+  owning component/repository → change or reuse unchanged → rationale. Name exact
+  repositories, consumer applications and inspected dependency versions/pins;
+  distinguish where an adapter lives from which component owns the policy it
+  invokes. For owned packages, prefer reuse of generic mechanisms while keeping
+  consumer-specific schemas, authorization, consent, source precedence and
+  business rules in the consumer. Ownership by the same person does not erase
+  these boundaries. Explain genuinely reusable extractions and their API,
+  migration/version and other-consumer impact; do not turn an adjacent package
+  into a new product by accumulation. If extraction is premature, state the
+  temporary owner and the evidence that would justify moving it. Identify
+  helpers and infrastructure reused, code removed or simplified, and the
+  minimum new code still needed. Explicitly identify duplicated responsibilities and
   justify any that remain; prefer deleting or reusing code over growing a
   consumer-specific copy. For example, explain whether scanner filtering uses
   shared CI/CD-harness nginx rules or duplicates them in application code,

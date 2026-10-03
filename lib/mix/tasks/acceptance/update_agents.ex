@@ -96,8 +96,12 @@ defmodule Mix.Tasks.Acceptance.UpdateAgents do
   - Review in dev; run matching ATDD once and reuse valid evidence. Require bounded
     safety checks before staging, full/deeper validation afterward and before prod.
     Document exceptional repeat runs; retain environment-specific external checks.
-  - Area markers (e.g. #participants) and path maps only add coverage. Unknown/shared
-    impact selects full required coverage. Assemble phases by stable scenario ID.
+  - Present a `#atdd-tags` validation scope alongside contract proposals (or the
+    implementation review): exact commit markers, canonical mappings, selected
+    scenario IDs, mandatory cross-role smoke and remaining/full fallback reasons.
+    Show proposed versus wired selection; review scope changes with the same ask.
+    Markers/path maps only add coverage; unknown/shared impact requires full
+    coverage. Tag approval cannot weaken contracts. Assemble phases by stable ID.
   - Use separate endpoint ports/base URLs AND test databases (`MIX_TEST_PARTITION`)
     for concurrent worktrees; never share mutable builds across checkouts.
   - Keep tmp/ ignored and disposable; durable review artifacts belong in docs/.

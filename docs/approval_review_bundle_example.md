@@ -84,12 +84,22 @@ these eight items in this order:
    in the page and deck: additions in green, removals in red, hunk headers in
    amber, and file metadata muted. Retain a raw diff link only as a secondary
    artifact. This is the exact proposed scenario change, not a prose summary or
-   an unstyled tab substituted for the diff.
+   an unstyled tab substituted for the diff. In the same item/approval request,
+   show the **`#atdd-tags` validation scope**: current/proposed commit markers,
+   canonical mappings and selected scenario IDs, changed-path rules, mandatory
+   cross-role smoke, remaining coverage and full-suite fallback reasons. Label
+   selection as proposed or actually configured. Reuse existing approval states;
+   do not make the reviewer hunt through another deck to validate tags. If no
+   contract changes are needed, include this in the implementation review.
 5. **`FAC-CODE · Implementation preview · Reuse and simplification`** — show a
    short code excerpt or request-flow sketch of the planned solution. Name
-   owning repositories/layers, inspected package versions and existing helpers
-   reused, code removed or simplified, and minimal new code that remains
-   necessary. Identify and justify any duplicated responsibility. For this
+   each behavior’s owning component and exact repository, whether it changes or
+   is reused unchanged, inspected package versions/pins and the reason for that
+   boundary. Show generic mechanisms reused from owned packages separately from
+   consumer-specific data, authorization, consent and business rules. An adapter
+   does not transfer policy ownership. Explain any extraction, its API and
+   other-consumer impact—or why it remains local for now. Name code removed or
+   simplified and the minimum new code; justify duplicated responsibilities. For this
    example, explain reuse of ordinary final-batch Cc and participant-space
    authorization rather than a new special-email or parallel chat path. A
    preview is not acceptance evidence or a frozen implementation contract;
